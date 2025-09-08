@@ -1,39 +1,29 @@
-import itertools
+# xien.py
+import re
+from itertools import combinations
+from typing import List
 
-def clean_numbers_input(text):
-    """
-    Chuẩn hóa chuỗi số nhập vào, bỏ ký tự thừa, chỉ lấy số có 2 chữ số trở lên,
-    tách bằng khoảng trắng, phẩy, xuống dòng.
-    """
-    raw = text.replace(",", " ").replace("\n", " ")
-    nums = [x.strip() for x in raw.split() if x.strip().isdigit() and len(x.strip()) >= 2]
-    return nums
+def _unique_keep_order(seq):
+    seen = set()
+    out = []
+    for x in seq:
+        if x not in seen:
+            seen.add(x)
+            out.append(x)
+    return out
 
-def gen_xien(numbers, n):
-    """
-    Sinh tất cả tổ hợp xiên n từ dàn số.
-    Trả về list tổ hợp (tuple), mỗi tổ hợp có n số, không trùng nhau.
-    """
-    numbers = list(dict.fromkeys(numbers))  # Loại bỏ trùng
-    if len(numbers) < n:
+def clean_numbers_for_xien(text: str) -> List[str]:
+    """Lấy các mục >= 2 chữ số để ghép xiên; loại trùng, giữ thứ tự xuất hiện."""
+    nums = [t for t in re.split(r"[^0-9]", text) if len(t) >= 2]
+    return _unique_keep_order(nums)
+
+def gen_xien_v2(nums: List[str], n: int) -> List[str]:
+    """Sinh tổ hợp xiên n theo đúng thứ tự xuất hiện, mỗi mục ở dạng 'a-b-...'"""
+    if not (2 <= n <= 10):
         return []
-    combos = list(itertools.combinations(numbers, n))
-    return combos
-
-def format_xien_result(combos):
-    """
-    Định dạng kết quả ghép xiên:
-    - Các số trong tổ hợp ngăn cách bằng &
-    - Các tổ hợp ngăn cách bằng dấu phẩy ,
-    - Sau mỗi 20 tổ hợp thì xuống dòng
-    """
-    if not combos:
-        return "❗ Không đủ số để ghép xiên."
-    # Định dạng từng tổ hợp: 22&33&44,...
-    formatted = ["&".join(combo) for combo in combos]
-    # Ngắt dòng sau mỗi 20 tổ hợp
-    lines = []
-    for i in range(0, len(formatted), 20):
+    if len(nums) < n:
+        return []
+    return ["-".join(c) for c in combinations(nums, n)]
         chunk = formatted[i:i+20]
         lines.append(", ".join(chunk))
     result = "*Kết quả tổ hợp xiên:*\n" + "\n".join(lines)
