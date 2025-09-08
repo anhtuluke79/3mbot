@@ -1,39 +1,184 @@
 import os
 import logging
 import re
-from itertools import combinations, permutations
 from datetime import datetime
 from typing import List
 
-from telegram import (
-    Update,
-    InlineKeyboardMarkup,
-    InlineKeyboardButton,
-)
+from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.constants import ParseMode
 from telegram.ext import (
-    Application,
-    ApplicationBuilder,
-    CommandHandler,
-    MessageHandler,
-    CallbackQueryHandler,
-    ContextTypes,
-    filters,
+    Application, ApplicationBuilder, CommandHandler, MessageHandler,
+    CallbackQueryHandler, ContextTypes, filters,
 )
 
-# === Import các module người dùng đã cung cấp ===
-# Lưu ý: các file này cần nằm cùng thư mục với file main này
-from cang_dao import clean_numbers_input as clean_nums_cang  # dùng chuẩn hoá từ module cũ
+# ==== IMPORT MODULE TÁCH RIÊNG ====
+from cang_dao import (
+    parse_cang_list, parse_numbers_2_3, ghep_cang_v2,
+    dao_so_v2, format_list_chunks,
+)
+from xien import clean_numbers_for_xien, gen_xien_v2
 from phongthuy import (
-    phongthuy_tudong,
-    get_can_chi_ngay,
-    chuan_hoa_can_chi,
-    sinh_so_hap_cho_ngay,
-    chot_so_format,
+    phongthuy_tudong, get_can_chi_ngay, chuan_hoa_can_chi,
+    sinh_so_hap_cho_ngay, chot_so_format,
 )
 from ungho import ung_ho_gop_y
-from xien import clean_numbers_input as clean_nums_xien  # chỉ dùng nếu muốn tái sử dụng
 
+# =========================
+# Logging
+# =========================
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    level=logging.INFO,
+)
+logger = logging.getLogger(__name__)
+
+# =========================
+# Session state
+# =========================
+# mode: None|cang3d|cang4d|dao|xien|phongthuy
+USER_MODE_KEY = "mode"
+USER_XIEN_N_KEY = "xien_n"
+USER_PENDING_NUMS = "pending_nums"   # dàn 2 số (3D) hoặc 3 số (4D)
+
+# =========================
+# UI
+# =========================
+def main_menu_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔢 Ghép Càng", callback_data="menu_cang"),
+         InlineKeyboardButton("🔀 Đảo Số", callback_data="menu_dao")],
+        [InlineKeyboardButton("🎯 Xiên n", callback_data="menu_xien"),
+         InlineKeyboardButton("🔮 Phong Thủy", callback_data="menu_phongthuy")],
+        [InlineKeyboardButton("📌 Chốt số hôm nay", callback_data="menu_chotso")],
+        [InlineKeyboardButton("💖 Ủng hộ & góp ý", callback_data="menu_ungho")],
+    ])
+
+def cang_submenu() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("3D", callback_data="menu_cang3d"),
+         InlineKeyboardButton("4D", callback_data="menu_cang4d")],
+        [InlineKeyboardButton("⬅️ Trở về menu", callback_data="menu")],
+    ])
+
+def menu_text() -> str:
+    return (
+        "👋 *Chào mừng đến với trợ lý số!*\n\n"
+        "• /cang3d – Ghép càng 3D (2 bước)\n"
+        "• /cang4d – Ghép càng 4D (2 bước)\n"
+        "• /dao – Hoán vị 2–6 chữ số\n"
+        "• /xien – Ghép xiên n\n"
+        "• /phongthuy – Tra phong thủy ngày/Can Chi\n"
+        "• /chotso – Gợi ý chốt số hôm nay\n"
+        "• /ungho – Ủng hộ & góp ý\n"
+        "• /help – Hướng dẫn chi tiết"
+    )
+
+ASYNC_GUIDES = {
+    "cang3d": (
+        "*Ghép Càng 3D*\n"
+        "Bước 1: nhập dàn 2 số, ví dụ: `23 32, 34,43 45 75`\n"
+        "Bước 2: nhập càng (1 chữ số), ví dụ: `1 2,3`\n"
+        "→ Kết quả: 1+23→123, 1+32→132, ..."
+    ),
+    "cang4d": (
+        "*Ghép Càng 4D*\n"
+        "Bước 1: nhập dàn 3 số, ví dụ: `123 321 345`\n"
+        "Bước 2: nhập càng (1 chữ số), ví dụ: `1 2`\n"
+        "→ Kết quả: 1+123→1123, 2+345→2345, ..."
+    ),
+    "dao": (
+        "*Đảo Số*\nGửi 1 số có 2–6 chữ số để tạo mọi hoán vị.\nVí dụ: `123` hoặc `0123`."
+    ),
+    "xien": (
+        "*Xiên n*\n`/xien n` rồi xuống dòng nhập dàn số (mỗi số ≥ 2 chữ số).\n"
+        "Ví dụ:\n/xien 3\n11 22 33 44 55"
+    ),
+    "phongthuy": (
+        "*Phong thủy*\nGửi ngày dương (yyyy-mm-dd, dd/mm/yyyy, ...) hoặc Can Chi (Giáp Tý...)."
+    ),
+    "chotso": (
+        "*Chốt số hôm nay* – dựa trên Can Chi ngày hiện tại."
+    ),
+}
+
+# =========================
+# Commands
+# =========================
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data[USER_MODE_KEY] = None
+    context.user_data[USER_XIEN_N_KEY] = None
+    context.user_data[USER_PENDING_NUMS] = None
+    if update.message:
+        await update.message.reply_text(menu_text(), parse_mode=ParseMode.MARKDOWN, reply_markup=main_menu_keyboard())
+
+async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data[USER_MODE_KEY] = None
+    context.user_data[USER_XIEN_N_KEY] = None
+    context.user_data[USER_PENDING_NUMS] = None
+    text = "\n\n".join(ASYNC_GUIDES.values())
+    if update.message:
+        await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
+
+async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    data = q.data
+    if data == "menu":
+        context.user_data[USER_MODE_KEY] = None
+        context.user_data[USER_XIEN_N_KEY] = None
+        context.user_data[USER_PENDING_NUMS] = None
+        await q.edit_message_text(menu_text(), parse_mode=ParseMode.MARKDOWN, reply_markup=main_menu_keyboard())
+        return
+    if data == "menu_ungho":
+        context.user_data[USER_MODE_KEY] = None
+        await ung_ho_gop_y(update, context)
+        return
+    if data == "menu_cang":
+        context.user_data[USER_MODE_KEY] = None
+        context.user_data[USER_PENDING_NUMS] = None
+        await q.edit_message_text("*Chọn loại ghép càng*", parse_mode=ParseMode.MARKDOWN, reply_markup=cang_submenu())
+        return
+    if data == "menu_cang3d":
+        context.user_data[USER_MODE_KEY] = "cang3d"
+        context.user_data[USER_PENDING_NUMS] = None
+        await q.edit_message_text(ASYNC_GUIDES["cang3d"], parse_mode=ParseMode.MARKDOWN, reply_markup=cang_submenu())
+        return
+    if data == "menu_cang4d":
+        context.user_data[USER_MODE_KEY] = "cang4d"
+        context.user_data[USER_PENDING_NUMS] = None
+        await q.edit_message_text(ASYNC_GUIDES["cang4d"], parse_mode=ParseMode.MARKDOWN, reply_markup=cang_submenu())
+        return
+    if data == "menu_phongthuy":
+        context.user_data[USER_MODE_KEY] = "phongthuy"
+        await q.edit_message_text(ASYNC_GUIDES["phongthuy"], parse_mode=ParseMode.MARKDOWN,
+                                  reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Trở về menu", callback_data="menu")]]))
+        return
+    if data == "menu_chotso":
+        context.user_data[USER_MODE_KEY] = None
+        fake_update = Update(update.update_id, message=q.message)
+        await chotso_cmd(fake_update, context)
+        return
+    if data == "menu_xien":
+        context.user_data[USER_MODE_KEY] = "xien"
+        context.user_data[USER_XIEN_N_KEY] = None
+        await q.edit_message_text(ASYNC_GUIDES["xien"], parse_mode=ParseMode.MARKDOWN,
+                                  reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Trở về menu", callback_data="menu")]]))
+        return
+    if data == "menu_dao":
+        context.user_data[USER_MODE_KEY] = "dao"
+        await q.edit_message_text(ASYNC_GUIDES["dao"], parse_mode=ParseMode.MARKDOWN,
+                                  reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Trở về menu", callback_data="menu")]]))
+        return
+
+# ---- /cang3d & /cang4d
+async def cang3d_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data[USER_MODE_KEY] = "cang3d"
+    context.user_data[USER_PENDING_NUMS] = None
+    if update.message:
+        await update.message.reply_text(ASYNC_GUIDES["cang3d"], parse_mode=ParseMode.MARKDOWN)
+
+async def cang4d_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.u
 # =========================
 # Logging
 # =========================
