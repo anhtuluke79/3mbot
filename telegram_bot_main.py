@@ -178,6 +178,302 @@ async def cang3d_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(ASYNC_GUIDES["cang3d"], parse_mode=ParseMode.MARKDOWN)
 
 async def cang4d_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data[USER_MODE_KEY] = "cang4d"
+    context.user_data[USER_PENDING_NUMS] = None
+    if update.message:
+        await update.message.reply_text(ASYNC_GUIDES["cang4d"], parse_mode=ParseMode.MARKDOWN)
+
+# ---- /dao
+async def dao_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message:
+        return
+    text = (update.message.text or "").replace("/dao", "").strip()
+    if not text:
+        context.user_data[USER_MODE_KEY] = "dao"
+        await update.message.reply_text(ASYNC_GUIDES["dao"], parse_mode=ParseMode.MARKDOWN)
+        return
+    target = "".join(c for c in text if c.isdigit())
+    perms = dao_so_v2(target)
+    if not perms:
+        await update.message.reply_text("❗ Vui lòng gửi 1 số có 2–6 chữ số.")
+        return
+    await update.message.reply_text("*Các hoán vị:*\n" + format_list_chunks(perms, 40), parse_mode=ParseMode.MARKDOWN)
+
+# ---- /xien
+async def xien_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message:
+        return
+    parts = (update.message.text or "").split("\n", 1)
+    header = parts[0]
+    body = parts[1] if len(parts) > 1 else ""
+    toks = header.split()
+    if len(toks) < 2:
+        context.user_data[USER_MODE_KEY] = "xien"
+        context.user_data[USER_XIEN_N_KEY] = None
+        await update.message.reply_text(ASYNC_GUIDES["xien"], parse_mode=ParseMode.MARKDOWN)
+        return
+    try:
+        n = int(toks[1])
+    except Exception:
+        await update.message.reply_text("❗ Cú pháp sai. Ví dụ: /xien 3\n11 22 33 44 55", parse_mode=ParseMode.MARKDOWN)
+        return
+    numbers = clean_numbers_for_xien(body)
+    combos = gen_xien_v2(numbers, n)
+    if not combos:
+        await update.message.reply_text("❗ Dàn số chưa đủ để ghép xiên hoặc n không hợp lệ.")
+        return
+    await update.message.reply_text(f"*Kết quả xiên {n}:*\n" + format_list_chunks(combos, 20), parse_mode=ParseMode.MARKDOWN)
+
+# ---- /phongthuy
+async def phongthuy_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message:
+        return
+    text = (update.message.text or "").replace("/phongthuy", "").strip()
+    if not text:
+        context.user_data[USER_MODE_KEY] = "phongthuy"
+        await update.message.reply_text(ASYNC_GUIDES["phongthuy"], parse_mode=ParseMode.MARKDOWN)
+        return
+    reply = phongthuy_tudong(text)
+    await update.message.reply_text(reply)
+
+# ---- /chotso
+async def chotso_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = update.message or getattr(update, "effective_message", None)
+    if not msg:
+        return
+    today = datetime.now()
+    y, m, d = today.year, today.month, today.day
+    can_chi = chuan_hoa_can_chi(get_can_chi_ngay(y, m, d))
+    sohap_info = sinh_so_hap_cho_ngay(can_chi)
+    reply = chot_so_format(can_chi, sohap_info, today.strftime("%d-%m-%Y"))
+    await msg.reply_text(reply, parse_mode=ParseMode.MARKDOWN)
+
+# ---- /ungho
+async def ungho_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await ung_ho_gop_y(update, context)
+
+# ---- Text router
+async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message:
+        return
+    t = (update.message.text or "").strip()
+    mode = context.user_data.get(USER_MODE_KEY)
+
+    # Shortcut: hôm nay -> chốt số
+    if not mode and t.lower() in {"hom nay", "hôm nay", "today"}:
+        await chotso_cmd(update, context)
+        return
+
+    # Càng 3D/4D – 2 bước
+    if mode in {"cang3d", "cang4d"}:
+        if not context.user_data.get(USER_PENDING_NUMS):
+            nums = parse_numbers_2_3(t)
+            want_len = 2 if mode == "cang3d" else 3
+            nums = [x for x in nums if len(x) == want_len]
+            if not nums:
+                await update.message.reply_text("❗ Hãy nhập dàn số đúng định dạng (2 số cho 3D, 3 số cho 4D).")
+                return
+            context.user_data[USER_PENDING_NUMS] = nums
+            await update.message.reply_text("Đã nhận dàn số. Bây giờ gửi *càng* (ví dụ: `1 2,3`).", parse_mode=ParseMode.MARKDOWN)
+            return
+        cangs = parse_cang_list(t)
+        if not cangs:
+            await update.message.reply_text("❗ Không đọc được càng. Ví dụ: `1 2,3`.")
+            return
+        nums = context.user_data.get(USER_PENDING_NUMS) or []
+        res = ghep_cang_v2(nums, cangs)
+        context.user_data[USER_PENDING_NUMS] = None
+        await update.message.reply_text("*Kết quả ghép:*\n" + format_list_chunks(res, 25), parse_mode=ParseMode.MARKDOWN)
+        return
+
+    # Đảo số ở mode "dao"
+    if mode == "dao":
+        target = "".join(ch for ch in t if ch.isdigit())
+        perms = dao_so_v2(target)
+        if not perms:
+            await update.message.reply_text("❗ Vui lòng gửi 1 số có 2–6 chữ số.")
+            return
+        await update.message.reply_text("*Các hoán vị:*\n" + format_list_chunks(perms, 40), parse_mode=ParseMode.MARKDOWN)
+        return
+
+    # Xiên n – 2 bước (n=... rồi dàn)
+    if mode == "xien":
+        if t.lower().startswith("n="):
+            try:
+                context.user_data[USER_XIEN_N_KEY] = int(t.split("=", 1)[1])
+                await update.message.reply_text("Đã nhận n. Bây giờ gửi dàn số.")
+            except Exception:
+                await update.message.reply_text("Không đọc được n, ví dụ: n=3")
+            return
+        n = context.user_data.get(USER_XIEN_N_KEY)
+        if n:
+            combos = gen_xien_v2(clean_numbers_for_xien(t), n)
+            if not combos:
+                await update.message.reply_text("❗ Dàn số chưa đủ để ghép xiên.")
+                return
+            await update.message.reply_text(f"*Kết quả xiên {n}:*\n" + format_list_chunks(combos, 20), parse_mode=ParseMode.MARKDOWN)
+            return
+        else:
+            await update.message.reply_text("Bạn chưa đặt n. Gửi ví dụ: n=3")
+            return
+
+    # Phong thủy
+    if mode == "phongthuy":
+        reply = phongthuy_tudong(t)
+        await update.message.reply_text(reply)
+        return
+
+    await update.message.reply_text(menu_text(), parse_mode=ParseMode.MARKDOWN, reply_markup=main_menu_keyboard())
+
+# =========================
+# Bootstrapping
+# =========================
+def build_application() -> Application:
+    token = os.getenv("BOT_TOKEN")
+    if not token:
+        raise RuntimeError("Missing env BOT_TOKEN")
+    app = ApplicationBuilder().token(token).build()
+
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("help", help_cmd))
+    app.add_handler(CommandHandler("cang3d", cang3d_cmd))
+    app.add_handler(CommandHandler("cang4d", cang4d_cmd))
+    app.add_handler(CommandHandler("dao", dao_cmd))
+    app.add_handler(CommandHandler("xien", xien_cmd))
+    app.add_handler(CommandHandler("phongthuy", phongthuy_cmd))
+    app.add_handler(CommandHandler("chotso", chotso_cmd))
+    app.add_handler(CommandHandler("ungho", ungho_cmd))
+
+    app.add_handler(CallbackQueryHandler(menu_callback))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_router))
+    return app
+
+def main():
+    app = build_application()
+    logger.info("Bot started. Press Ctrl+C to stop.")
+    app.run_polling(allowed_updates=Update.ALL_TYPES)
+
+if __name__ == "__main__":
+    main()
+
+def menu_text() -> str:
+    return (
+        "👋 *Chào mừng đến với trợ lý số!*\n\n"
+        "• /cang3d – Ghép càng 3D (2 bước)\n"
+        "• /cang4d – Ghép càng 4D (2 bước)\n"
+        "• /dao – Hoán vị 2–6 chữ số\n"
+        "• /xien – Ghép xiên n\n"
+        "• /phongthuy – Tra phong thủy ngày/Can Chi\n"
+        "• /chotso – Gợi ý chốt số hôm nay\n"
+        "• /ungho – Ủng hộ & góp ý\n"
+        "• /help – Hướng dẫn chi tiết"
+    )
+
+ASYNC_GUIDES = {
+    "cang3d": (
+        "*Ghép Càng 3D*\n"
+        "Bước 1: nhập dàn 2 số, ví dụ: `23 32, 34,43 45 75`\n"
+        "Bước 2: nhập càng (1 chữ số), ví dụ: `1 2,3`\n"
+        "→ Kết quả: 1+23→123, 1+32→132, ..."
+    ),
+    "cang4d": (
+        "*Ghép Càng 4D*\n"
+        "Bước 1: nhập dàn 3 số, ví dụ: `123 321 345`\n"
+        "Bước 2: nhập càng (1 chữ số), ví dụ: `1 2`\n"
+        "→ Kết quả: 1+123→1123, 2+345→2345, ..."
+    ),
+    "dao": (
+        "*Đảo Số*\nGửi 1 số có 2–6 chữ số để tạo mọi hoán vị.\nVí dụ: `123` hoặc `0123`."
+    ),
+    "xien": (
+        "*Xiên n*\n`/xien n` rồi xuống dòng nhập dàn số (mỗi số ≥ 2 chữ số).\n"
+        "Ví dụ:\n/xien 3\n11 22 33 44 55"
+    ),
+    "phongthuy": (
+        "*Phong thủy*\nGửi ngày dương (yyyy-mm-dd, dd/mm/yyyy, ...) hoặc Can Chi (Giáp Tý...)."
+    ),
+    "chotso": (
+        "*Chốt số hôm nay* – dựa trên Can Chi ngày hiện tại."
+    ),
+}
+
+# =========================
+# Commands
+# =========================
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data[USER_MODE_KEY] = None
+    context.user_data[USER_XIEN_N_KEY] = None
+    context.user_data[USER_PENDING_NUMS] = None
+    if update.message:
+        await update.message.reply_text(menu_text(), parse_mode=ParseMode.MARKDOWN, reply_markup=main_menu_keyboard())
+
+async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data[USER_MODE_KEY] = None
+    context.user_data[USER_XIEN_N_KEY] = None
+    context.user_data[USER_PENDING_NUMS] = None
+    text = "\n\n".join(ASYNC_GUIDES.values())
+    if update.message:
+        await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
+
+async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    data = q.data
+    if data == "menu":
+        context.user_data[USER_MODE_KEY] = None
+        context.user_data[USER_XIEN_N_KEY] = None
+        context.user_data[USER_PENDING_NUMS] = None
+        await q.edit_message_text(menu_text(), parse_mode=ParseMode.MARKDOWN, reply_markup=main_menu_keyboard())
+        return
+    if data == "menu_ungho":
+        context.user_data[USER_MODE_KEY] = None
+        await ung_ho_gop_y(update, context)
+        return
+    if data == "menu_cang":
+        context.user_data[USER_MODE_KEY] = None
+        context.user_data[USER_PENDING_NUMS] = None
+        await q.edit_message_text("*Chọn loại ghép càng*", parse_mode=ParseMode.MARKDOWN, reply_markup=cang_submenu())
+        return
+    if data == "menu_cang3d":
+        context.user_data[USER_MODE_KEY] = "cang3d"
+        context.user_data[USER_PENDING_NUMS] = None
+        await q.edit_message_text(ASYNC_GUIDES["cang3d"], parse_mode=ParseMode.MARKDOWN, reply_markup=cang_submenu())
+        return
+    if data == "menu_cang4d":
+        context.user_data[USER_MODE_KEY] = "cang4d"
+        context.user_data[USER_PENDING_NUMS] = None
+        await q.edit_message_text(ASYNC_GUIDES["cang4d"], parse_mode=ParseMode.MARKDOWN, reply_markup=cang_submenu())
+        return
+    if data == "menu_phongthuy":
+        context.user_data[USER_MODE_KEY] = "phongthuy"
+        await q.edit_message_text(ASYNC_GUIDES["phongthuy"], parse_mode=ParseMode.MARKDOWN,
+                                  reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Trở về menu", callback_data="menu")]]))
+        return
+    if data == "menu_chotso":
+        context.user_data[USER_MODE_KEY] = None
+        fake_update = Update(update.update_id, message=q.message)
+        await chotso_cmd(fake_update, context)
+        return
+    if data == "menu_xien":
+        context.user_data[USER_MODE_KEY] = "xien"
+        context.user_data[USER_XIEN_N_KEY] = None
+        await q.edit_message_text(ASYNC_GUIDES["xien"], parse_mode=ParseMode.MARKDOWN,
+                                  reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Trở về menu", callback_data="menu")]]))
+        return
+    if data == "menu_dao":
+        context.user_data[USER_MODE_KEY] = "dao"
+        await q.edit_message_text(ASYNC_GUIDES["dao"], parse_mode=ParseMode.MARKDOWN,
+                                  reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Trở về menu", callback_data="menu")]]))
+        return
+
+# ---- /cang3d & /cang4d
+async def cang3d_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data[USER_MODE_KEY] = "cang3d"
+    context.user_data[USER_PENDING_NUMS] = None
+    if update.message:
+        await update.message.reply_text(ASYNC_GUIDES["cang3d"], parse_mode=ParseMode.MARKDOWN)
+
+async def cang4d_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.u
 # =========================
 # Logging
